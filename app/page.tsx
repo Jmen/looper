@@ -1,101 +1,189 @@
-import Image from "next/image";
+'use client'
+
+import { useState, useRef, useEffect } from 'react';
+import AudioPlayer from './components/AudioPlayer';
+import MasterVisualizer from './components/MasterVisualizer';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [globalBPM, setGlobalBPM] = useState<number>(120);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentBeat, setCurrentBeat] = useState(0); // 0-3 for four beats
+  const [soloChannels, setSoloChannels] = useState<Set<number>>(new Set());
+  const [masterVolume, setMasterVolume] = useState(1);
+  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
+  const beatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const masterGainRef = useRef<GainNode | null>(null);
+  const [masterAnalyser, setMasterAnalyser] = useState<AnalyserNode | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+  // Initialize audio context and master gain
+  useEffect(() => {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const gainNode = ctx.createGain();
+    const analyserNode = ctx.createAnalyser();
+    analyserNode.fftSize = 2048;
+    
+    gainNode.connect(analyserNode);
+    analyserNode.connect(ctx.destination);
+    
+    setAudioContext(ctx);
+    setMasterAnalyser(analyserNode);
+    masterGainRef.current = gainNode;
+
+    return () => {
+      ctx.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isPlaying) {
+      const interval = (60 / globalBPM) * 1000; // Convert BPM to milliseconds
+      beatIntervalRef.current = setInterval(() => {
+        setCurrentBeat(prev => (prev + 1) % 4);
+      }, interval);
+    } else {
+      if (beatIntervalRef.current) {
+        clearInterval(beatIntervalRef.current);
+        beatIntervalRef.current = null;
+      }
+      setCurrentBeat(0);
+    }
+
+    return () => {
+      if (beatIntervalRef.current) {
+        clearInterval(beatIntervalRef.current);
+      }
+    };
+  }, [isPlaying, globalBPM]);
+
+  const handleBPMChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    const newBPM = parseInt(value);
+    
+    // Allow empty input for typing
+    if (value === '') {
+      setGlobalBPM(0);
+      return;
+    }
+    
+    // Only update if it's a valid number
+    if (!isNaN(newBPM)) {
+      // Clamp value between 60-200 when input is complete
+      if (value.length >= 3) {
+        const clampedBPM = Math.min(Math.max(newBPM, 60), 200);
+        setGlobalBPM(clampedBPM);
+      } else {
+        setGlobalBPM(newBPM);
+      }
+    }
+  };
+
+  const handleGlobalPlayback = () => {
+    // Resume AudioContext on first play
+    if (audioContext?.state === 'suspended') {
+      audioContext.resume();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleSolo = (channelNumber: number) => {
+    setSoloChannels(prev => {
+      const newSolo = new Set(prev);
+      if (newSolo.has(channelNumber)) {
+        newSolo.delete(channelNumber);
+      } else {
+        newSolo.add(channelNumber);
+      }
+      return newSolo;
+    });
+  };
+
+  // Determine if a channel should be heard
+  const isChannelActive = (channelNumber: number) => {
+    return soloChannels.size === 0 || soloChannels.has(channelNumber);
+  };
+
+  const handleMasterVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVolume = parseFloat(e.target.value);
+    setMasterVolume(newVolume);
+    if (masterGainRef.current) {
+      masterGainRef.current.gain.value = newVolume;
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center p-8">
+      <div className="w-full max-w-[1800px]">
+        {/* Global Controls */}
+        <div className="mb-8 flex items-center gap-8">
+          <div className="flex items-center gap-4">
+            <label className="font-medium text-gray-700">Global Tempo:</label>
+            <input
+              type="number"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={globalBPM || ''}
+              onChange={handleBPMChange}
+              className="w-20 px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <span className="text-gray-500">BPM</span>
+          </div>
+          <div className="flex gap-2">
+            {[0, 1, 2, 3].map((beat) => (
+              <div 
+                key={beat}
+                className={`w-3 h-3 rounded-full transition-colors duration-75 ${
+                  currentBeat === beat ? 'bg-blue-500' : 'bg-gray-200'
+                }`}
+              />
+            ))}
+          </div>
+          <div className="flex items-center gap-4">
+            <label className="font-medium text-gray-700">Master:</label>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={masterVolume}
+              onChange={handleMasterVolumeChange}
+              className="w-32 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+            />
+            <span className="text-gray-500 w-12 text-right">
+              {Math.round(masterVolume * 100)}%
+            </span>
+          </div>
+          <button
+            onClick={handleGlobalPlayback}
+            className={`px-6 py-2 rounded font-medium transition-colors ${
+              isPlaying 
+                ? 'bg-red-500 hover:bg-red-600 text-white' 
+                : 'bg-blue-500 hover:bg-blue-600 text-white'
+            }`}
           >
-            Read our docs
-          </a>
+            {isPlaying ? 'Stop' : 'Play'}
+          </button>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        {/* Master Visualizer */}
+        <MasterVisualizer analyser={masterAnalyser} />
+
+        {/* Eight Channels */}
+        <div className="grid grid-cols-4 lg:grid-cols-8 gap-3">
+          {[1, 2, 3, 4, 5, 6, 7, 8].map(channelNumber => (
+            <AudioPlayer
+              key={channelNumber}
+              title={channelNumber.toString()}
+              globalBPM={globalBPM}
+              isGlobalPlaying={isPlaying}
+              isSolo={soloChannels.has(channelNumber)}
+              isActive={isChannelActive(channelNumber)}
+              onSolo={() => handleSolo(channelNumber)}
+              masterGainNode={masterGainRef.current}
+              audioContext={audioContext}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
