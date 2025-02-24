@@ -1,7 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from "react";
-import { amplitudeToDB } from "../utils/audio";
+import { useState, useRef, useEffect, useCallback } from "react";
 
 interface AudioPlayerProps {
   title?: string;
@@ -210,13 +209,11 @@ async function detectBPM(audioBuffer: AudioBuffer, filename: string): Promise<nu
     intervals.forEach(interval => {
       const ratios = [0.25, 0.5, 1, 2, 4];
       let matches = false;
-      let matchedRatio = null;
       
       ratios.forEach(ratio => {
         const target = expectedInterval * ratio;
         if (Math.abs(interval - target) <= target * tolerance) {
           matches = true;
-          matchedRatio = ratio;
         }
       });
       
@@ -276,66 +273,188 @@ export default function AudioPlayer({
   audioContext,
   onMemoryChange
 }: AudioPlayerProps) {
-  const [isDragging, setIsDragging] = useState(false);
-  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
   const [bpm, setBpm] = useState<number | null>(null);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [manualBPM, setManualBPM] = useState<string>('');
-  const lastUpdateRef = useRef<number>(0);
-
-  // Audio refs
-  const audioBufferRef = useRef<AudioBuffer | null>(null);
+  const [manualBPM, setManualBPM] = useState<string>("");
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
+  const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
-  
-  // Visual refs
+  const audioBufferRef = useRef<AudioBuffer | null>(null);
+  const originalBufferRef = useRef<AudioBuffer | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const waveformCanvasRef = useRef<HTMLCanvasElement>(null);
   const frequencyCanvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
 
+  // Create persistent audio nodes
   useEffect(() => {
-    if (audioContext && !analyserRef.current) {
-      analyserRef.current = audioContext.createAnalyser();
-      gainNodeRef.current = audioContext.createGain();
-      analyserRef.current.fftSize = 2048;
+    if (audioContext && masterGainNode) {
+      // Create nodes
+      const compressor = audioContext.createDynamicsCompressor();
+      const gainNode = audioContext.createGain();
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      
+      // Connect nodes
+      gainNode.connect(compressor);
+      compressor.connect(analyser);
+      analyser.connect(masterGainNode);
+      
+      compressorRef.current = compressor;
+      gainNodeRef.current = gainNode;
+      analyserRef.current = analyser;
 
-      if (gainNodeRef.current && masterGainNode) {
-        gainNodeRef.current.connect(masterGainNode);
-      }
+      return () => {
+        gainNode.disconnect();
+        compressor.disconnect();
+        analyser.disconnect();
+      };
     }
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
   }, [audioContext, masterGainNode]);
 
-  // Update playback rate when globalBPM changes
+  // Set initial volume when nodes are created
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted]);
+
+  // Set volume based on mute state, active state, and volume slider
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      const effectiveVolume = (!isActive || isMuted) ? 0 : volume;
+      gainNodeRef.current.gain.value = effectiveVolume;
+    }
+  }, [volume, isMuted, isActive]);
+
+  const drawWaveform = useCallback(() => {
+    if (!waveformCanvasRef.current || !analyserRef.current) return;
+
+    const canvas = waveformCanvasRef.current;
+    const canvasCtx = canvas.getContext('2d');
+    if (!canvasCtx) return;
+
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyserRef.current.getByteTimeDomainData(dataArray);
+
+    canvasCtx.fillStyle = 'rgb(200, 200, 200)';
+    canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+    canvasCtx.lineWidth = 2;
+    canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
+    canvasCtx.beginPath();
+
+    const sliceWidth = canvas.width / bufferLength;
+    let x = 0;
+
+    for (let i = 0; i < bufferLength; i++) {
+      const v = dataArray[i] / 128.0;
+      const y = v * (canvas.height / 2);
+
+      if (i === 0) {
+        canvasCtx.moveTo(x, y);
+      } else {
+        canvasCtx.lineTo(x, y);
+      }
+
+      x += sliceWidth;
+    }
+
+    canvasCtx.lineTo(canvas.width, canvas.height / 2);
+    canvasCtx.stroke();
+  }, []);
+
+  const drawFrequencyBars = useCallback(() => {
+    if (!frequencyCanvasRef.current || !analyserRef.current) return;
+
+    const canvas = frequencyCanvasRef.current;
+    const canvasCtx = canvas.getContext('2d');
+    if (!canvasCtx) return;
+
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyserRef.current.getByteFrequencyData(dataArray);
+
+    canvasCtx.fillStyle = 'rgb(200, 200, 200)';
+    canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const barWidth = (canvas.width / bufferLength) * 2.5;
+    let x = 0;
+
+    for (let i = 0; i < bufferLength; i++) {
+      const barHeight = (dataArray[i] / 255) * canvas.height;
+
+      const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, 0);
+      gradient.addColorStop(0, '#2563eb');
+      gradient.addColorStop(1, '#3b82f6');
+      
+      canvasCtx.fillStyle = gradient;
+      canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+      x += barWidth + 1;
+    }
+  }, []);
+
+  const draw = useCallback(() => {
+    drawWaveform();
+    drawFrequencyBars();
+    animationFrameRef.current = requestAnimationFrame(draw);
+  }, [drawWaveform, drawFrequencyBars]);
+
+  const stopPlayback = useCallback(() => {
+    if (sourceNodeRef.current) {
+      sourceNodeRef.current.stop();
+      sourceNodeRef.current.disconnect();
+      sourceNodeRef.current = null;
+    }
+
+    // Stop visualization
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+  }, []);
+
+  const startPlayback = useCallback(async () => {
+    if (!audioContext || !audioBufferRef.current || !gainNodeRef.current) return;
+    
+    stopPlayback();
+
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBufferRef.current;
+    source.playbackRate.value = playbackRate;
+    source.loop = true;
+    
+    source.connect(gainNodeRef.current);
+    source.start(0);
+    
+    sourceNodeRef.current = source;
+    draw();
+  }, [audioContext, playbackRate, draw, stopPlayback]);
+
   useEffect(() => {
     if (bpm) {
       const newRate = globalBPM / bpm;
       setPlaybackRate(newRate);
       
-      // Update playback rate of current source if playing
       if (sourceNodeRef.current) {
         sourceNodeRef.current.playbackRate.setValueAtTime(newRate, audioContext?.currentTime || 0);
       }
     }
-  }, [globalBPM, bpm]);
+  }, [globalBPM, bpm, audioContext?.currentTime]);
 
-  // Handle global playback state changes
   useEffect(() => {
-    if (isGlobalPlaying && audioBufferRef.current && isActive) {
+    if (isGlobalPlaying && audioBufferRef.current) {
       startPlayback();
-    } else {
+    } else if (!isGlobalPlaying) {
       stopPlayback();
     }
-  }, [isGlobalPlaying, isActive]);
+  }, [isGlobalPlaying, startPlayback, audioBufferRef, audioContext, masterGainNode, playbackRate, stopPlayback]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -385,22 +504,12 @@ export default function AudioPlayer({
   };
 
   const handleMuteToggle = () => {
-    if (!gainNodeRef.current || !audioContext) return;
-
-    const now = audioContext.currentTime;
-    const newMuteState = !isMuted;
-    const newGainValue = newMuteState ? 0 : volume;
-    
-    gainNodeRef.current.gain.setValueAtTime(newGainValue, now + 0.01);
-    setIsMuted(newMuteState);
+    setIsMuted(!isMuted);
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newVolume = parseFloat(e.target.value);
     setVolume(newVolume);
-    if (gainNodeRef.current && !isMuted) {
-      gainNodeRef.current.gain.value = newVolume;
-    }
   };
 
   const handleManualBPMChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -413,137 +522,17 @@ export default function AudioPlayer({
     }
   };
 
-  const draw = () => {
-    drawWaveform();
-    drawFrequencyBars();
-    animationFrameRef.current = requestAnimationFrame(draw);
-  };
-
-  const drawWaveform = () => {
-    if (!waveformCanvasRef.current || !analyserRef.current) return;
-
-    const canvas = waveformCanvasRef.current;
-    const canvasCtx = canvas.getContext('2d');
-    if (!canvasCtx) return;
-
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    analyserRef.current.getByteTimeDomainData(dataArray);
-
-    canvasCtx.fillStyle = 'rgb(200, 200, 200)';
-    canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-    canvasCtx.lineWidth = 2;
-    canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
-    canvasCtx.beginPath();
-
-    const sliceWidth = canvas.width / bufferLength;
-    let x = 0;
-
-    for (let i = 0; i < bufferLength; i++) {
-      const v = dataArray[i] / 128.0;
-      const y = v * (canvas.height / 2);
-
-      if (i === 0) {
-        canvasCtx.moveTo(x, y);
-      } else {
-        canvasCtx.lineTo(x, y);
-      }
-
-      x += sliceWidth;
-    }
-
-    canvasCtx.lineTo(canvas.width, canvas.height / 2);
-    canvasCtx.stroke();
-  };
-
-  const drawFrequencyBars = () => {
-    if (!frequencyCanvasRef.current || !analyserRef.current) return;
-
-    const canvas = frequencyCanvasRef.current;
-    const canvasCtx = canvas.getContext('2d');
-    if (!canvasCtx) return;
-
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    analyserRef.current.getByteFrequencyData(dataArray);
-
-    canvasCtx.fillStyle = 'rgb(200, 200, 200)';
-    canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const barWidth = (canvas.width / bufferLength) * 2.5;
-    let x = 0;
-
-    for (let i = 0; i < bufferLength; i++) {
-      const barHeight = (dataArray[i] / 255) * canvas.height;
-
-      const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, 0);
-      gradient.addColorStop(0, '#2563eb');
-      gradient.addColorStop(1, '#3b82f6');
-      
-      canvasCtx.fillStyle = gradient;
-      canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-
-      x += barWidth + 1;
-    }
-  };
-
-  const startPlayback = async () => {
-    if (!audioContext || !audioBufferRef.current || !analyserRef.current || !gainNodeRef.current) {
-      return;
-    }
-
-    // Ensure context is running
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume();
-    }
-
-    const now = audioContext.currentTime;
-    
-    const sourceNode = audioContext.createBufferSource();
-    sourceNode.buffer = audioBufferRef.current;
-    sourceNode.loop = true;
-    
-    // Apply current playback rate
-    sourceNode.playbackRate.setValueAtTime(playbackRate, now);
-    
-    sourceNode.connect(analyserRef.current);
-    analyserRef.current.connect(gainNodeRef.current);
-    
-    sourceNode.start(now + 0.01);
-    
-    sourceNodeRef.current = sourceNode;
-
-    // Start visualization
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-    draw();
-  };
-
-  const stopPlayback = () => {
-    if (sourceNodeRef.current) {
-      sourceNodeRef.current.stop();
-      sourceNodeRef.current.disconnect();
-      sourceNodeRef.current = null;
-    }
-
-    // Stop visualization
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-  };
-
   const handleClearFile = () => {
     if (audioFile && audioBufferRef.current) {
       const bufferSize = audioBufferRef.current.numberOfChannels * audioBufferRef.current.length * 4;
       onMemoryChange(audioFile.size, bufferSize, false);
     }
-    // Stop playback if playing
+    
     stopPlayback();
     
-    // Clear all refs and state
+    // Clear refs and state
     audioBufferRef.current = null;
+    originalBufferRef.current = null;
     sourceNodeRef.current = null;
     setAudioFile(null);
     setBpm(null);
@@ -552,6 +541,13 @@ export default function AudioPlayer({
     setIsMuted(false);
     setPlaybackRate(1);
     setManualBPM('');
+
+    // Reset volume
+    if (gainNodeRef.current && audioContext) {
+      const now = audioContext.currentTime;
+      gainNodeRef.current.gain.setValueAtTime(gainNodeRef.current.gain.value, now);
+      gainNodeRef.current.gain.linearRampToValueAtTime(1, now + 0.016);
+    }
   };
 
   // Format duration to MM:SS

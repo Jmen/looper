@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 
 interface MasterVisualizerProps {
   analyser: AnalyserNode | null;
@@ -11,6 +11,75 @@ export default function MasterVisualizer({ analyser }: MasterVisualizerProps) {
   const frequencyCanvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
 
+  const drawWaveform = useCallback(() => {
+    if (!analyser || !waveformCanvasRef.current) return;
+    const canvas = waveformCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyser.getByteTimeDomainData(dataArray);
+
+    ctx.fillStyle = 'rgb(200, 200, 200)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgb(0, 0, 0)';
+    ctx.beginPath();
+
+    const sliceWidth = canvas.width * 1.0 / bufferLength;
+    let x = 0;
+
+    for (let i = 0; i < bufferLength; i++) {
+      const v = dataArray[i] / 128.0;
+      const y = v * canvas.height / 2;
+
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+
+      x += sliceWidth;
+    }
+
+    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+  }, [analyser]);
+
+  const drawFrequencyBars = useCallback(() => {
+    if (!analyser || !frequencyCanvasRef.current) return;
+    const canvas = frequencyCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyser.getByteFrequencyData(dataArray);
+
+    ctx.fillStyle = 'rgb(200, 200, 200)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const barWidth = (canvas.width / bufferLength) * 2.5;
+    let barHeight;
+    let x = 0;
+
+    for (let i = 0; i < bufferLength; i++) {
+      barHeight = dataArray[i] / 2;
+
+      ctx.fillStyle = `rgb(${barHeight + 100},50,50)`;
+      ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+      x += barWidth + 1;
+    }
+  }, [analyser]);
+
+  const draw = useCallback(() => {
+    drawWaveform();
+    drawFrequencyBars();
+    animationFrameRef.current = requestAnimationFrame(draw);
+  }, [drawWaveform, drawFrequencyBars]);
+
   useEffect(() => {
     if (analyser) {
       draw();
@@ -20,81 +89,7 @@ export default function MasterVisualizer({ analyser }: MasterVisualizerProps) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [analyser]);
-
-  const draw = () => {
-    drawWaveform();
-    drawFrequencyBars();
-    animationFrameRef.current = requestAnimationFrame(draw);
-  };
-
-  const drawWaveform = () => {
-    if (!waveformCanvasRef.current || !analyser) return;
-
-    const canvas = waveformCanvasRef.current;
-    const canvasCtx = canvas.getContext('2d');
-    if (!canvasCtx) return;
-
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    analyser.getByteTimeDomainData(dataArray);
-
-    canvasCtx.fillStyle = 'rgb(200, 200, 200)';
-    canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-    canvasCtx.lineWidth = 2;
-    canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
-    canvasCtx.beginPath();
-
-    const sliceWidth = canvas.width / bufferLength;
-    let x = 0;
-
-    for (let i = 0; i < bufferLength; i++) {
-      const v = dataArray[i] / 128.0;
-      const y = v * (canvas.height / 2);
-
-      if (i === 0) {
-        canvasCtx.moveTo(x, y);
-      } else {
-        canvasCtx.lineTo(x, y);
-      }
-
-      x += sliceWidth;
-    }
-
-    canvasCtx.lineTo(canvas.width, canvas.height / 2);
-    canvasCtx.stroke();
-  };
-
-  const drawFrequencyBars = () => {
-    if (!frequencyCanvasRef.current || !analyser) return;
-
-    const canvas = frequencyCanvasRef.current;
-    const canvasCtx = canvas.getContext('2d');
-    if (!canvasCtx) return;
-
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    analyser.getByteFrequencyData(dataArray);
-
-    canvasCtx.fillStyle = 'rgb(200, 200, 200)';
-    canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const barWidth = (canvas.width / bufferLength) * 2.5;
-    let x = 0;
-
-    for (let i = 0; i < bufferLength; i++) {
-      const barHeight = (dataArray[i] / 255) * canvas.height;
-
-      const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, 0);
-      gradient.addColorStop(0, '#2563eb');
-      gradient.addColorStop(1, '#3b82f6');
-      
-      canvasCtx.fillStyle = gradient;
-      canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-
-      x += barWidth + 1;
-    }
-  };
+  }, [analyser, draw]);
 
   return (
     <div className="flex gap-4 mb-8">
