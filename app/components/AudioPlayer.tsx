@@ -13,6 +13,7 @@ interface AudioPlayerProps {
   onSolo: () => void;
   masterGainNode: GainNode | null;
   audioContext: AudioContext | null;
+  onMemoryChange: (fileSize: number | null, bufferSize: number | null, isAdding: boolean) => void;
 }
 
 function extractBPMFromFilename(filename: string): number | null {
@@ -272,7 +273,8 @@ export default function AudioPlayer({
   isActive,
   onSolo,
   masterGainNode,
-  audioContext
+  audioContext,
+  onMemoryChange
 }: AudioPlayerProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [audioFile, setAudioFile] = useState<File | null>(null);
@@ -282,8 +284,6 @@ export default function AudioPlayer({
   const [bpm, setBpm] = useState<number | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [manualBPM, setManualBPM] = useState<string>('');
-  const [peak, setPeak] = useState<number>(0);
-  const [displayPeak, setDisplayPeak] = useState<number>(0);
   const lastUpdateRef = useRef<number>(0);
 
   // Audio refs
@@ -363,6 +363,10 @@ export default function AudioPlayer({
         if (audioContext) {
           const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
           audioBufferRef.current = audioBuffer;
+          
+          // Calculate buffer size: channels * samples * bytes per sample
+          const bufferSize = audioBuffer.numberOfChannels * audioBuffer.length * 4; // 32-bit float = 4 bytes
+          onMemoryChange(audioFile.size, bufferSize, true);
           
           const detectedBpm = await detectBPM(audioBuffer, audioFile.name);
           setBpm(detectedBpm);
@@ -463,21 +467,6 @@ export default function AudioPlayer({
     const dataArray = new Uint8Array(bufferLength);
     analyserRef.current.getByteFrequencyData(dataArray);
 
-    // Calculate peak
-    let currentPeak = 0;
-    for (let i = 0; i < bufferLength; i++) {
-      currentPeak = Math.max(currentPeak, dataArray[i] / 255);
-    }
-    setPeak(currentPeak);
-
-    // Update display peak only if it's higher than current display
-    const now = performance.now();
-    if (now - lastUpdateRef.current > 500 && currentPeak > displayPeak) {
-      setDisplayPeak(currentPeak);
-      lastUpdateRef.current = now;
-    }
-
-    // Draw frequency bars
     canvasCtx.fillStyle = 'rgb(200, 200, 200)';
     canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -538,10 +527,6 @@ export default function AudioPlayer({
       sourceNodeRef.current = null;
     }
 
-    // Reset peak display when stopping
-    setDisplayPeak(0);
-    setPeak(0);
-
     // Stop visualization
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -550,6 +535,10 @@ export default function AudioPlayer({
   };
 
   const handleClearFile = () => {
+    if (audioFile && audioBufferRef.current) {
+      const bufferSize = audioBufferRef.current.numberOfChannels * audioBufferRef.current.length * 4;
+      onMemoryChange(audioFile.size, bufferSize, false);
+    }
     // Stop playback if playing
     stopPlayback();
     
@@ -563,7 +552,6 @@ export default function AudioPlayer({
     setIsMuted(false);
     setPlaybackRate(1);
     setManualBPM('');
-    setPeak(0);
   };
 
   // Format duration to MM:SS
@@ -616,9 +604,6 @@ export default function AudioPlayer({
                 min="60"
                 max="200"
               />
-              <div className="mt-4">
-                <p>Peak: {displayPeak ? `${amplitudeToDB(displayPeak).toFixed(1)}dB` : '-∞'}</p>
-              </div>
             </div>
           </div>
 

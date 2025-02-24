@@ -14,6 +14,8 @@ export default function Home() {
   const beatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
   const [masterAnalyser, setMasterAnalyser] = useState<AnalyserNode | null>(null);
+  const [totalFileSize, setTotalFileSize] = useState<number>(0);
+  const [totalBufferSize, setTotalBufferSize] = useState<number>(0);
 
   // Initialize audio context and master gain
   useEffect(() => {
@@ -110,58 +112,72 @@ export default function Home() {
     }
   };
 
+  // Add this function to calculate memory
+  const updateTotalMemory = (fileSize: number | null, bufferSize: number | null, isAdding: boolean) => {
+    setTotalFileSize(prev => isAdding ? prev + (fileSize || 0) : prev - (fileSize || 0));
+    setTotalBufferSize(prev => isAdding ? prev + (bufferSize || 0) : prev - (bufferSize || 0));
+  };
+
   return (
     <div className="min-h-screen flex flex-col items-center p-8">
       <div className="w-full max-w-[1800px]">
         {/* Global Controls */}
-        <div className="mb-8 flex items-center gap-8">
-          <div className="flex items-center gap-4">
-            <label className="font-medium text-gray-700">Global Tempo:</label>
-            <input
-              type="number"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={globalBPM || ''}
-              onChange={handleBPMChange}
-              className="w-20 px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <span className="text-gray-500">BPM</span>
-          </div>
-          <div className="flex gap-2">
-            {[0, 1, 2, 3].map((beat) => (
-              <div 
-                key={beat}
-                className={`w-3 h-3 rounded-full transition-colors duration-75 ${
-                  currentBeat === beat ? 'bg-blue-500' : 'bg-gray-200'
+        <div className="mb-8">
+          <div className="flex flex-wrap items-center justify-between">
+            <div className="flex flex-wrap items-center gap-4 mb-4">
+              <div className="flex items-center gap-4">
+                <label className="font-medium text-gray-700">Global Tempo:</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={globalBPM || ''}
+                  onChange={handleBPMChange}
+                  className="w-20 px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-gray-500">BPM</span>
+              </div>
+              <div className="flex gap-2">
+                {[0, 1, 2, 3].map((beat) => (
+                  <div 
+                    key={beat}
+                    className={`w-3 h-3 rounded-full transition-colors duration-75 ${
+                      currentBeat === beat ? 'bg-blue-500' : 'bg-gray-200'
+                    }`}
+                  />
+                ))}
+              </div>
+              <div className="flex items-center gap-4">
+                <label className="font-medium text-gray-700">Master:</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={masterVolume}
+                  onChange={handleMasterVolumeChange}
+                  className="w-32 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                />
+                <span className="text-gray-500 w-12 text-right">
+                  {Math.round(masterVolume * 100)}%
+                </span>
+              </div>
+              <button
+                onClick={handleGlobalPlayback}
+                className={`px-6 py-2 rounded font-medium transition-colors mr-8 ${
+                  isPlaying 
+                    ? 'bg-red-500 hover:bg-red-600 text-white' 
+                    : 'bg-blue-500 hover:bg-blue-600 text-white'
                 }`}
-              />
-            ))}
+              >
+                {isPlaying ? 'Stop' : 'Play'}
+              </button>
+            </div>
+            <div className="text-sm text-gray-600 text-right">
+              <div>Files: {(totalFileSize / (1024 * 1024)).toFixed(2)} MB</div>
+              <div>Memory: {(totalBufferSize / (1024 * 1024)).toFixed(2)} MB</div>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
-            <label className="font-medium text-gray-700">Master:</label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={masterVolume}
-              onChange={handleMasterVolumeChange}
-              className="w-32 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-            />
-            <span className="text-gray-500 w-12 text-right">
-              {Math.round(masterVolume * 100)}%
-            </span>
-          </div>
-          <button
-            onClick={handleGlobalPlayback}
-            className={`px-6 py-2 rounded font-medium transition-colors ${
-              isPlaying 
-                ? 'bg-red-500 hover:bg-red-600 text-white' 
-                : 'bg-blue-500 hover:bg-blue-600 text-white'
-            }`}
-          >
-            {isPlaying ? 'Stop' : 'Play'}
-          </button>
         </div>
 
         {/* Master Visualizer */}
@@ -180,6 +196,7 @@ export default function Home() {
               onSolo={() => handleSolo(channelNumber)}
               masterGainNode={masterGainRef.current}
               audioContext={audioContext}
+              onMemoryChange={updateTotalMemory}
             />
           ))}
         </div>
